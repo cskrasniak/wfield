@@ -1,3 +1,6 @@
+### function to grab IBL data from flatiron to align to the task, must be run from iblenv
+### Chris Krasniak 2021-01-08
+
 from oneibl.one import ONE
 from pathlib import Path
 import numpy as np
