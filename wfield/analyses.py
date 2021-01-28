@@ -1,3 +1,7 @@
+### A bunch of analyses for widefield data, mostly for making simple plots like PSTHs and for
+### extracting and aligning behavioral data to imaging data, might split this up in the future
+### Chris Krasniak, 2021-01-28
+
 from labcams import parse_cam_log
 import matplotlib.pyplot as plt
 import numpy as np
