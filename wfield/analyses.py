@@ -237,7 +237,7 @@ def whole_brain_peth(event_frames, U,SVT, window=[-10,30],smoothing=[1,1,1]):
     x = np.arange(window[0],window[1])
     return x, reconstruction, ste
 
-def psth_from_df(U,SVT,behavior,sync_behavior,atlas, area, ccf_regions,localdisk,ax=plt.gca(), events='stimOn_times', split_on='contrastRight',window=[-20,60],smoothing=[1,1,1]):
+def psth_from_df(U,SVT,behavior,sync_behavior,atlas, area_list, ccf_regions,localdisk,ax=plt.gca(), events='stimOn_times', split_on='contrastRight',window=[-20,60],smoothing=[1,1,1]):
     """
     Make and plot psth by calling a column from behavior to plot different lines for each condition
     in that column. best used with the contrasts, probabilities, and choices, though you can also 
@@ -264,25 +264,39 @@ def psth_from_df(U,SVT,behavior,sync_behavior,atlas, area, ccf_regions,localdisk
     frameDF[frameDF==0]=np.nan
     psths=[]
     stes=[]
+    if type(area_list) == int:
+        area_list = [area_list]
     #loop over unique values
     for u in tqdm(uniques):
         event_frames = np.array(frameDF[behavior[split_on] == u][events])
+        event_frames = event_frames[~np.isnan(event_frames)]
         x,psth,ste = whole_brain_peth(event_frames,U,SVT,window=window,smoothing=smoothing)
         psths.append(psth)
         stes.append(ste)
     #loop to plot each psth
     # fig,ax = plt.subplots(1,1,constrained_layout=True)
-    norm = mplc.Normalize(vmin=0,vmax=len(psths))
+    norm = mplc.Normalize(vmin=-.3,vmax=len(psths)-.3)
+    cmaps = ['Blues','Reds','Greens','Oranges','Purples']
     clist = []
     labels = []
-    for cnt in range(len(psths)):
-        color = cm.tab20(norm(cnt))
-        temp_psth = psths[cnt][:,atlas==area].mean(axis=1)
-        temp_ste = stes[cnt][:,atlas==area].mean(axis=1)
-        ax.plot(x,temp_psth,color=color)
-        ax.fill_between(x,temp_psth+temp_ste,temp_psth-temp_ste,color=color,alpha=.5)
-        clist.append(color)
-        labels.append(split_on + ' = ' + str(uniques[cnt]))
+    cnt=0
+    cmapCnt = 0
+    for area in area_list:
+        cmap = plt.get_cmap(cmaps[cmapCnt])
+        cmapCnt+=1
+        if area > 0:
+            area_name = (ccf_regions[ccf_regions.label==abs(area)]['acronym'].iloc[0] + ' left')
+        elif area < 0:
+            area_name = (ccf_regions[ccf_regions.label==abs(area)]['acronym'].iloc[0] + ' right')
+        for i in range(len(psths)):
+            color = cmap(norm(i))
+            temp_psth = psths[i][:,atlas==area].mean(axis=1)
+            temp_ste = stes[i][:,atlas==area].mean(axis=1)
+            ax.plot(x,temp_psth,color=color)
+            ax.fill_between(x,temp_psth+temp_ste,temp_psth-temp_ste,color=color,alpha=.5)
+            clist.append(color)
+            labels.append(area_name + ', ' + split_on + ' = ' + str(uniques[i]))
+            cnt+=1
 
     make_legend(ax,clist,labels,location='upper right',bbox_to_anchor=(.99,.99))
     ax.set_xlim(np.min(x),np.max(x))
@@ -292,10 +306,7 @@ def psth_from_df(U,SVT,behavior,sync_behavior,atlas, area, ccf_regions,localdisk
     ax.set_xlabel('time (s)')
     ax.set_ylabel('df/f')
     ax.set_ylim(-.01,.03)
-    if area > 0:
-        ax.set_title(ccf_regions[ccf_regions.label==abs(area)]['acronym'].iloc[0] + ' left')
-    elif area < 0:
-        ax.set_title(ccf_regions[ccf_regions.label==abs(area)]['acronym'].iloc[0] + ' right')
+
     return x, psths, stes
 
 def plot_bi_psth(U,SVT,events,allen_area,allen_atlas,ax=plt.gca()):
