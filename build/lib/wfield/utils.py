@@ -195,7 +195,7 @@ class SVDStack(object):
     def get_timecourse(self,xy):
         # TODO: this needs a better interface
         x = int(np.clip(xy[0],0,self.shape[1]))
-        y = int(np.clip(yy[1],0,self.shape[2]))
+        y = int(np.clip(xy[1],0,self.shape[2]))
         idx = np.ravel_multi_index((x,y),self.shape[1:])
         t = self.Uflat[idx,:].dot(self.SVT)
         return t

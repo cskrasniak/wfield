@@ -105,6 +105,7 @@ def nb_save_movie(data,filename,interval = 100,dpi = 90,shape=None,**kwargs):
     fig = plt.gcf()
     i = _handle_sparse(data[0],shape = shape)
     im = plt.imshow(i.squeeze(),**kwargs)
+    plt.colorbar()
     animation = FuncAnimation(
         fig,
         animate,
@@ -115,7 +116,7 @@ def nb_save_movie(data,filename,interval = 100,dpi = 90,shape=None,**kwargs):
     pbar = tqdm(desc = 'Saving movie ',total=data.shape[0])
     animation.save(filename, dpi=dpi)
     pbar.close()
-    plt.show()
+    plt.show(block=False)
     print('Saved to {0}'.format(filename))
 
 
