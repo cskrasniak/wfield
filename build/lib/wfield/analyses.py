@@ -1,3 +1,7 @@
+### A bunch of analyses for widefield data, mostly for making simple plots like PSTHs and for
+### extracting and aligning behavioral data to imaging data, might split this up in the future
+### Chris Krasniak, 2021-01-28
+
 from labcams import parse_cam_log
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,42 +14,6 @@ import matplotlib.colors as mplc
 from matplotlib.lines import Line2D
 import seaborn as sns
 
-subject = 'CSK-im-002'
-date = '2021-01-14'
-localdisk = r'F:\imaging_data\CSK-im-002\2021-01-14'
-alf_folder = pjoin('G:\\FlatIron\\zadorlab\\Subjects\\',subject,date,'001','alf')
-behavior = fetch_task_data(subject,date)
-
-U = np.load(pjoin(localdisk,'U.npy'))# load spatial components
-SVTcorr = np.load(pjoin(localdisk,'SVTcorr.npy'))# load hemodynamic corrected temporal components
-SVT = np.load(pjoin(localdisk,'SVT.npy'))# load  normal temporal components
-onset_times = extract_onset_times(localdisk)
-#these are the trial onsets in terms of frames
-onsets = onset_times['frame']
-# the allen atlas and brain mask for finding which pixels corresponds to which area
-atlas, area_names, brain_mask = atlas_from_landmarks_file(pjoin(localdisk,'dorsal_cortex_landmarks.JSON'),do_transform=True)
-ccf_regions,proj,brain_outline = allen_load_reference('dorsal_cortex')
-
-#the transform to apply to the images
-transform = load_allen_landmarks(pjoin(localdisk, 'dorsal_cortex_landmarks.JSON'))['transform']
-outline_im, outline = make_allen_outline(atlas, allen_transform=transform)
-#sync up the behavior and grab a few things for analysis
-sync_behavior = sync_to_task(localdisk)
-right_trials = behavior['signedContrast'] > 0
-onsets = onsets.reset_index()
-right_onsets = onsets[:-1][right_trials]['frame']
-left_onsets = onsets[:-1][behavior['signedContrast'] < 0]['frame']
-strong_r = behavior[behavior['signedContrast']>.4]['stimOn_times']
-strong_r_frames = time_to_frames(sync_behavior,localdisk,np.array(strong_r))
-lick100 = time_to_frames(sync_behavior,localdisk,np.array(behavior['response_times'].iloc[:100]))
-
-strong_l = behavior[behavior['signedContrast']<-.4]['stimOn_times']
-strong_l_frames = time_to_frames(sync_behavior,localdisk,np.array(strong_l))
-# Use unique to exclude the default value of frames that is assigned for nan values
-first_move_l = np.unique(time_to_frames(sync_behavior, localdisk, np.array(behavior[behavior['choice']==-1]['firstMovement_times'])))
-first_move_r = np.unique(time_to_frames(sync_behavior, localdisk, np.array(behavior[behavior['choice']==1]['firstMovement_times'])))
-l_block_stim = np.unique(time_to_frames(sync_behavior, localdisk, np.array(behavior[behavior['probabilityLeft'] >.5]['stimOn_times'])))
-r_block_stim = np.unique(time_to_frames(sync_behavior, localdisk, np.array(behavior[behavior['probabilityLeft'] <.5]['stimOn_times'])))
 
 def extract_onset_times(localdisk):
         
@@ -129,7 +97,7 @@ def sync_to_task(localdisk):
     sync['frame'] = (sync['frame']/2).astype(int)
     return sync.dropna(axis=0)
 
-def time_to_frames(sync,localdisk,event_times):
+def time_to_frames(sync,localdisk,event_times, dropna=True):
     """
     This function attributes the closest frame of the imaging data to an array of events, such as 
     stimulus onsets.
@@ -139,10 +107,12 @@ def time_to_frames(sync,localdisk,event_times):
 
     returns an array of len(event_times) with a frame attributed to each event
     """
+    if dropna:
+        event_times = event_times[~np.isnan(event_times)]
     logdata,led,_,ncomm = parse_cam_log(glob(pjoin(localdisk,'*.camlog'))[0],readTeensy=True)
     sync['conversion'] = sync['timestamp']-sync['task_time']
 
-    led['timestamp']=led['timestamp']/1000
+    led['timestamp'] = led['timestamp']/1000  # this is the time of each frame
     def find_nearest(array, value):
         array = np.asarray(array)
         return (np.abs(array - value)).argmin()
@@ -235,35 +205,109 @@ def whole_brain_peth(event_frames, U,SVT, window=[-10,30],smoothing=[1,1,1]):
 
     if max(event_frames)/SVT.shape[1]>1.9:
         print('looks like this is data from one channel, downsampling the frames to match')
-    event_frames = np.asarray(event_frames/2).astype(np.int64)
+        event_frames = np.asarray(event_frames/2).astype(np.int64)
     assert len(U.shape)==3, 'U does not have the right dimensions, must be nframes x Wpixels x Hpixels'
     
     cnt=0
-    runsum = np.zeros((window[1]-window[0],540,640))
+    runsum = np.zeros((200,window[1]-window[0]))
     runsq = 0
-    for event in tqdm(event_frames):
+    for event in event_frames:
         event = int(event)
         start = event + window[0]
         end = event + window[1]
         if end > SVT.shape[1]:
             print('data ended too soon, padding with nans for the right shape')#pad it with nans if there isnt enough data
-            pad = np.empty([end-SVT.shape[1], U.shape[0], U.shape[1]])
+            pad = np.empty((SVT.shape[0],end-SVT.shape[1]))
             pad[:] = np.nan
-            m = np.concatenate(m,pad)
-        reconstruction = reconstruct(U,SVT[:,start:end])
+            SVT = np.concatenate((SVT,pad),axis=1)
+        section = SVT[:,start:end]
         if cnt == 0: #on first loop the first mean is just the first sample
-            m = reconstruction
+            m = section
         else: #update according to  Mk = M(k-1) + (Xk-M(k-1))/k
-            m = m + (reconstruction-m)/cnt
-        runsum+= reconstruction
-        runsq += np.square(reconstruction)
+            m = m + (section-m)/cnt
+        runsum+= section
+        runsq += np.square(section)
         cnt+=1
     m=runsum/cnt
-    ste = np.sqrt(runsq/cnt - np.square(runsum/cnt))/np.sqrt(len(event_frames))
+    reconstruction = reconstruct(U,m)
+    # reconstruction = reconstruction/cnt
+    ste = reconstruct(U,np.sqrt(runsq/cnt - np.square(runsum/cnt))/np.sqrt(len(event_frames)))
     if smoothing:
-        m = gaussian_filter(m,smoothing)
+        reconstruction = gaussian_filter(reconstruction,smoothing)
     x = np.arange(window[0],window[1])
-    return x, m, ste
+    return x, reconstruction, ste
+
+def psth_from_df(U,SVT,behavior,sync_behavior,atlas, area_list, ccf_regions,localdisk,ax=plt.gca(), events='stimOn_times', split_on='contrastRight',window=[-20,60],smoothing=[1,1,1]):
+    """
+    Make and plot psth by calling a column from behavior to plot different lines for each condition
+    in that column. best used with the contrasts, probabilities, and choices, though you can also 
+    create new columns such as reaction_time >1s.
+    inputs: 
+        U,SVT: spatial and temporal components
+        behavior: df with len(num_trials) and different columns witih trial info
+        sync_behavior: the sync dataframe to go between task time and frames
+        atlas: 540 x 640 allen_atlas to index into with the area parameter
+        area: the integer label for the area you want to select in the atlas
+        ccf_regions: the df with regions and labels to draw the area name from.
+        events: the events to align the PSTH to
+        split_on: a string of the column name for which to plot a different line for each unique value
+        window: the extent of the PSTH around the event
+        smoothing: the 3d parameters for the gaussian kernal used to smooth the PSTH
+    Outputs:
+        x: the range of times to use for plotting
+        psth: an array of len(np.unique(split_on)) of the resulting psths
+        ste: an array of len(psth) with the standard error for each psth
+    """
+
+    uniques = np.unique(behavior[split_on])
+    frameDF = time_to_frameDF(behavior,sync_behavior,localdisk)
+    frameDF[frameDF==0]=np.nan
+    psths=[]
+    stes=[]
+    if type(area_list) == int:
+        area_list = [area_list]
+    #loop over unique values
+    for u in tqdm(uniques):
+        event_frames = np.array(frameDF[behavior[split_on] == u][events])
+        event_frames = event_frames[~np.isnan(event_frames)]
+        x,psth,ste = whole_brain_peth(event_frames,U,SVT,window=window,smoothing=smoothing)
+        psths.append(psth)
+        stes.append(ste)
+    #loop to plot each psth
+    # fig,ax = plt.subplots(1,1,constrained_layout=True)
+    norm = mplc.Normalize(vmin=-.3,vmax=len(psths)-.3)
+    cmaps = ['Blues','Reds','Greens','Oranges','Purples']
+    clist = []
+    labels = []
+    cnt=0
+    cmapCnt = 0
+    for area in area_list:
+        cmap = plt.get_cmap(cmaps[cmapCnt])
+        cmapCnt+=1
+        if area > 0:
+            area_name = (ccf_regions[ccf_regions.label==abs(area)]['acronym'].iloc[0] + ' left')
+        elif area < 0:
+            area_name = (ccf_regions[ccf_regions.label==abs(area)]['acronym'].iloc[0] + ' right')
+        for i in range(len(psths)):
+            color = cmap(norm(i))
+            temp_psth = psths[i][:,atlas==area].mean(axis=1)
+            temp_ste = stes[i][:,atlas==area].mean(axis=1)
+            ax.plot(x,temp_psth,color=color)
+            ax.fill_between(x,temp_psth+temp_ste,temp_psth-temp_ste,color=color,alpha=.5)
+            clist.append(color)
+            labels.append(area_name + ', ' + split_on + ' = ' + str(uniques[i]))
+            cnt+=1
+
+    make_legend(ax,clist,labels,location='upper right',bbox_to_anchor=(.99,.99))
+    ax.set_xlim(np.min(x),np.max(x))
+    ax.set_xticks([0,15,30,45,60])
+    ax.set_xticklabels([0,.5,1,1.5,2])
+    ax.axvline(0,0,1,color='k')
+    ax.set_xlabel('time (s)')
+    ax.set_ylabel('df/f')
+    ax.set_ylim(-.01,.03)
+
+    return x, psths, stes
 
 def plot_bi_psth(U,SVT,events,allen_area,allen_atlas,ax=plt.gca()):
     x,peth_l,std_l = peth_by_allen_area(events,U,SVT,allen_area.label, allen_atlas,window=[-10,60])
@@ -285,7 +329,7 @@ def plot_bi_psth(U,SVT,events,allen_area,allen_atlas,ax=plt.gca()):
 
     plt.show(block=False)
 
-def plot_multi_psth(x, psth, ste, atlas, area_list,ccf_regions):
+def plot_multi_psth(ax,x, psth, ste, atlas, area_list,ccf_regions,format_axis=True):
     '''
     Takes the output of whole_brain_peth and plots psth traces for a subset of areas.
     x,psth,std: the output of whole_brain_peth
@@ -294,13 +338,13 @@ def plot_multi_psth(x, psth, ste, atlas, area_list,ccf_regions):
     area_list: the list off integer area codes to index into the atlas
     '''
     
-    fig,ax = plt.subplots(1,1)
+    # fig,ax = plt.subplots(1,1)
     norm = mplc.Normalize(vmin=0,vmax=len(area_list))
     cnt=0
     clist = []
     labels = []
     for area in area_list:
-        color = cm.hsv(norm(cnt))
+        color = cm.tab20(norm(cnt))
         temp_df = psth[:,atlas==area].mean(axis=1)
         temp_ste = ste[:,atlas==area].mean(axis=1)
         ax.plot(x,temp_df,color=color)
@@ -311,15 +355,16 @@ def plot_multi_psth(x, psth, ste, atlas, area_list,ccf_regions):
         elif area < 0:
             labels.append(ccf_regions[ccf_regions.label==abs(area)]['acronym'].iloc[0] + ' right')
         cnt+=1
+    if format_axis:
+        make_legend(ax,clist,labels, location='upper right',bbox_to_anchor=(.99,.99))
+        ax.set_xlim(np.min(x),np.max(x))
+        ax.set_xticks([0,15,30,45,60])
+        ax.set_xticklabels([0,.5,1,1.5,2])
+        ax.axvline(0,0,1,color='k')
+        ax.set_xlabel('time (s)')
+        ax.set_ylabel('df/f')
+        # plt.show(block=False)
 
-    make_legend(ax,clist,labels)
-    ax.set_xlim(np.min(x),np.max(x))
-    ax.set_xticks([0,15,30,45,60])
-    ax.set_xticklabels([0,.5,1,1.5,2])
-    ax.axvline(0,0,1,color='k')
-    ax.set_xlabel('time (s)')
-    ax.set_ylabel('df/f')
-    plt.show(block=False)
 
 def plot_wbpeth(x, psth, transform, outline, show_frames = [-1,1,3,5,7,9]):
     """
@@ -390,7 +435,7 @@ def functional_connectivity(U, SVT, atlas, spont_frames, area_names):
         test.append(i)
          
 
-def get_spont_frames(SVT, behavior,sync_behavior, use_end = False):
+def get_spont_frames(SVT, behavior,sync_behavior, use_end=False):
     """
     Fetch the frames in which 'spontaneous' activity is going on, to be used as an input to the 
     functional_connectivity function. By default this will take the frames that occur during the 
@@ -412,9 +457,9 @@ def get_spont_frames(SVT, behavior,sync_behavior, use_end = False):
     if use_end:  # return all frames after the last frame there was a behavior TTL
         return all_frames[sync_behavior['frame'][np.argmax(sync_behavior.task_time)]:]
     ITI_starts = behavior.stimOff_times[:-1]
-    ITI_starts = time_to_frames(sync_behavior, np.array(ITI_starts))
+    ITI_starts = time_to_frames(sync_behavior, localdisk, np.array(ITI_starts))
     ITI_ends = behavior.stimOn_times[1:]
-    ITI_ends = time_to_frames(sync_behavior, np.array(ITI_ends))
+    ITI_ends = time_to_frames(sync_behavior, localdisk, np.array(ITI_ends))
     # The task seems pretty buggy in that there are several very tiny ITIs (>.1s), throw those out
     use_ITIs = ITI_ends-ITI_starts > 10
     ITI_starts = ITI_starts[use_ITIs].astype(np.int64)
@@ -424,7 +469,7 @@ def get_spont_frames(SVT, behavior,sync_behavior, use_end = False):
         use_frames = np.append(use_frames,all_frames[ITI_starts[i]:ITI_ends[i]])
     return use_frames.astype(np.int64)
 
-def make_legend(ax,colors,labels, line_width=4,location='best'):
+def make_legend(ax,colors,labels, line_width=4,location='upper left', bbox_to_anchor=(1.01, 1)):
     """
     makes a custom legend from a given list of colors (or colormap) and labels
     Inputs: 
@@ -441,17 +486,33 @@ def make_legend(ax,colors,labels, line_width=4,location='best'):
     lines = []
     for color in colors:
         lines.append(Line2D([0], [0], color=color, lw=line_width))
-    ax.legend(lines,labels, loc=location)
+    ax.legend(lines,labels, bbox_to_anchor=bbox_to_anchor, loc=location)
 
-def plot_trace_sample(fig,ax,U, SVT, behavior, sync_behavior, allen_area, allen_atlas,plot_sec=15):
-    # first get all the frames for all the events and store inf frame_df
-    use_trials = behavior.iloc[:90]
+def time_to_frameDF(behavior,sync_behavior,localdisk):
+    """
+    Makes a dataframe that has all the timing events converted to frames
+    Inputs: 
+        behavior: df with len(num_trials) and different columns witih trial info
+        sync_behavior: the sync dataframe to go between task time and frames
+        localdisk: the directory where the above two are saved for this session
+    outputs:
+        frameDF: a dataframe with all the behavioral events that end with _times, that are instead
+        aligned to the camera and displayed as frames
+    """
     mask = ['times' in key for key in behavior.keys()]
-    time_df = use_trials[use_trials.keys()[mask]]
+    time_df = behavior[behavior.keys()[mask]]
     frame_df = pd.DataFrame(columns=time_df.keys())
     for (columnName, columnData) in time_df.iteritems():
-        frame_df[columnName] = time_to_frames(sync_behavior,columnData)
-    frame_df = frame_df.astype(np.int64)
+        frame_df[columnName] = time_to_frames(sync_behavior,localdisk,np.array(columnData),dropna=False)
+    frameDF = frame_df.astype(np.int64)
+    frameDF[frameDF==0]=np.nan
+
+    return frameDF
+
+def plot_trace_sample(fig,ax,U, SVT, behavior, sync_behavior, allen_area, atlas,localdisk, plot_sec=15):
+    # first get all the frames for all the events and store inf frame_df
+    use_trials = behavior.iloc[:90]
+    frame_df = time_to_frameDF(use_trials,sync_behavior,localdisk)
     # for the first plot, get the first 10 seconds, and the events that happen then
     first_event = frame_df['stimOn_times'][0]
     first_10 = reconstruct(U,SVT[:,first_event:first_event+plot_sec*30]) # ten seconds at 30fps
@@ -464,32 +525,36 @@ def plot_trace_sample(fig,ax,U, SVT, behavior, sync_behavior, allen_area, allen_
     first_10_l = first_10[:,atlas==area_l].mean(axis=1)
     first_10_r = first_10[:,atlas==area_r].mean(axis=1)
     
-    
+    norm = mplc.Normalize(vmin=0,vmax=len(area_list))
+    color1 = cm.tab20(norm(0))
+    color2 = cm.tab20(norm(1))
     fig.suptitle(allen_area.acronym)
-    ax.plot(x/30,first_10_l,'b')
-    ax.plot(x/30,first_10_r,'r')
+    ax.plot(x/30,first_10_l,color=color1)
+    ax.plot(x/30,first_10_r,color=color2)
 
     event_colors = ['c','g','orange','k']
     cnt=0
     for (event,times) in first_events.iteritems():
         ax.vlines(times/30,np.min(first_10_r),np.max(first_10_l),colors = event_colors[cnt])
         cnt+=1
-    colors = event_colors + ['r','b']
+
+    colors = event_colors + [color1,color2]
     labels = first_events.keys().tolist()+['Right_hem','Left_hem']
     make_legend(ax,colors,labels)
     # ax.set_xlabel('time (s)')
     ax.set_ylabel('df/f')
+    ax.set_xlim(0,plot_sec)
     # return np.vstack((first_10_l,first_10_r), first_events
 
 
-def plot_trial_sample(fig, ax, U, SVT, behavior, sync_behavior, allen_area, allen_atlas, trial_choice=np.arange(90)):
+def plot_trial_sample(fig, ax, U, SVT, behavior, sync_behavior, allen_area, allen_atlas, localdisk, trial_choice=np.arange(90)):
     
     use_behavior = behavior.iloc[trial_choice]
     mask = ['times' in key for key in use_behavior.keys()]
     time_df = use_behavior[use_behavior.keys()[mask]]
     frame_df = pd.DataFrame(columns=time_df.keys())
     for (columnName, columnData) in time_df.iteritems():
-        frame_df[columnName] = time_to_frames(sync_behavior,columnData)
+        frame_df[columnName] = time_to_frames(sync_behavior,localdisk,np.array(columnData),dropna=False)
     frame_df = frame_df.astype(np.int64)
     stimOns = np.array(frame_df.stimOn_times)
     trials = np.empty([len(frame_df),70])
@@ -497,7 +562,11 @@ def plot_trial_sample(fig, ax, U, SVT, behavior, sync_behavior, allen_area, alle
         stim = stimOns[i]
         trial_im = reconstruct(U,SVT[:,stim-10:stim+60])
         trials[i,:] = trial_im[:,allen_atlas==allen_area.label].mean(axis=1)
-    ax = sns.heatmap(trials,cmap='viridis',cbar=True,square=False,cbar_kws={'label': 'df/f'},ax=ax)
+    ax = sns.heatmap(trials,cmap='viridis',cbar=False,square=False)
+    # norm = mplc.Normalize(vmin=np.min(trials),vmax=np.max(trials))
+
+    # cb = fig.colorbar(cm.ScalarMappable(norm=norm, cmap='viridis'), ax=ax)
+    # cb.set_label('df/f')
     ax.axvline(10,0,90,color='k')
     ax.set_xticks(np.arange(0,70,10))
     ax.set_xlim(0,70)
@@ -507,7 +576,7 @@ def plot_trial_sample(fig, ax, U, SVT, behavior, sync_behavior, allen_area, alle
     return trials
 
 
-def plot_signal_summary(U, SVT, behavior, sync_behavior, allen_area, allen_atlas,events):
+def plot_signal_summary(fig,U, SVT, behavior, sync_behavior, allen_area, allen_atlas,localdisk,ccf_regions):
     """
     plot a summary of the signal through stages of processing for a single brain area. First a few
     traces of raw df/f, then some trials, and an average trace.
@@ -519,18 +588,28 @@ def plot_signal_summary(U, SVT, behavior, sync_behavior, allen_area, allen_atlas
         allen_area: pandas series taking one row of the ccf_regions dataframe
         allen_atlas: 540x640 array with each area marked by its unique label
     """
-    fig = plt.figure(constrained_layout=True)
+    # fig = plt.figure(constrained_layout=True)
+    use_behavior = behavior.iloc[np.arange(90)]
+    mask = ['times' in key for key in use_behavior.keys()]
+    time_df = use_behavior[use_behavior.keys()[mask]]
+    frame_df = pd.DataFrame(columns=time_df.keys())
+    for (columnName, columnData) in time_df.iteritems():
+        frame_df[columnName] = time_to_frames(sync_behavior,localdisk,np.array(columnData),dropna=False)
+    frame_df = frame_df.astype(np.int64)
+    stimOns = np.array(frame_df.stimOn_times)
+
     gs = fig.add_gridspec(3, 3)
     ax1 = fig.add_subplot(gs[0, :])
     ax2 = fig.add_subplot(gs[1, :])
     ax3 = fig.add_subplot(gs[2, :])
     print('plotting a sample of the raw trace...')
-    plot_trace_sample(fig,ax1,U, SVT, behavior, sync_behavior, allen_area, allen_atlas)
+    plot_trace_sample(fig,ax1,U, SVT, behavior, sync_behavior, allen_area, allen_atlas,localdisk)
     print('plotting the first 90 trials...')
-    plot_trial_sample(fig,ax2,U, SVT, behavior, sync_behavior, allen_area, allen_atlas)
+    plot_trial_sample(fig,ax2,U, SVT, behavior, sync_behavior, allen_area, allen_atlas,localdisk)
     print('plotting the PSTHs...')
-    plot_bi_psth(U,SVTcorr,events,allen_area,atlas,ax=ax3)
-    plt.show(block=False)
+    x,psth,ste = whole_brain_peth(stimOns,U,SVT,window=[-10,60])
+    plot_multi_psth(ax3,x,psth,ste,allen_atlas,[allen_area.label,allen_area.label*-1],ccf_regions)
+    # plt.show(block=False)
 
 def time_lag_corr(data_x, data_y, lag):
     """
@@ -581,29 +660,27 @@ def windowed_lag_corr(U,SVT,mask_x, mask_y, events=[], roll_range=[-60,60]):
                     array that is returned
     """
     all_corrs = []
-    if len(events) == 0:
-        data_end = SVT.shape[-1]
-        roll_end = int(roll_range[1]+roll_range[1]/2)
-        roll_start = 0
-        pbar = tqdm(total=SVT.shape[1]/roll_range[1])
-        while roll_end < data_end:
-            load_frames = reconstruct(U,SVT[:,roll_start:roll_end])
-            frames_x = load_frames[:,mask_x].mean(axis=1)
-            frames_y = load_frames[:,mask_y].mean(axis=1)
-            corrs = [time_lag_corr(frames_x,frames_y,lag)[0,1] for lag in np.arange(roll_range[0],roll_range[1])]
-            all_corrs.append(corrs[int(roll_range[1]/2):int(roll_range[1]+roll_range[1]/2)])
-            roll_start = int(roll_end - roll_range[1])
-            roll_end += int(roll_range[1])
-            pbar.update(1)
-    else:
-        for event in tqdm(events):
-            roll_start = event + roll_range[0]
-            roll_end = event + roll_range[1]
-            load_frames = reconstruct(U,SVT[:,roll_start:roll_end])
-            frames_x = load_frames[:,mask_x].mean(axis=1)
-            frames_y = load_frames[:,mask_y].mean(axis=1)
-            corrs = [time_lag_corr(frames_x,frames_y,lag)[0,1] for lag in np.arange(roll_range[0],roll_range[1])]
-            all_corrs.append(corrs[int(roll_range[1]/2):int(roll_range[1]+roll_range[1]/2)])
+    # if len(events) == 0:
+    #     data_end = SVT.shape[-1]
+    #     roll_end = int(roll_range[1]+roll_range[1]/2)
+    #     roll_start = 0
+
+    #     load_frames = SVT[:,roll_start:roll_end]
+
+    #     corrs = [time_lag_corr(load_frames,load_frames,lag)[0,1] for lag in np.arange(roll_range[0],roll_range[1])]
+    #     all_corrs.append(corrs[int(roll_range[1]/2):int(roll_range[1]+roll_range[1]/2)])
+    #     roll_start = int(roll_end - roll_range[1])
+    #     roll_end += int(roll_range[1])
+        
+    # else:
+    for event in tqdm(events):
+        roll_start = event + roll_range[0]
+        roll_end = event + roll_range[1]
+        load_frames = SVT[:,roll_start:roll_end]
+        frames_x = load_frames[:,mask_x].mean(axis=1)
+        frames_y = load_frames[:,mask_y].mean(axis=1)
+        corrs = [time_lag_corr(frames_x,frames_y,lag)[0,1] for lag in np.arange(roll_range[0],roll_range[1])]
+        all_corrs.append(corrs[int(roll_range[1]/2):int(roll_range[1]+roll_range[1]/2)])
     return np.asarray(all_corrs)
 
 
@@ -633,3 +710,4 @@ def plot_window_lag(corr_im, area1_label, area2_label,data_range=60):
     ax1.set_ylabel('Trial number')
     ax1.set_title(' {} leads <> {} leads'.format(area2_label,area1_label))
     show()
+
