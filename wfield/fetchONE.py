@@ -1,13 +1,20 @@
+#!/usr/bin/python
 ### function to grab IBL data from flatiron to align to the task, must be run from iblenv
 ### Chris Krasniak 2021-01-08
 
 from oneibl.one import ONE
 from pathlib import Path
 import numpy as np
+import sys, getopt
 one = ONE()
-def fetchONE(subject,date):
+def fetchONE(argv):
+    _,args = getopt.getopt(argv,'abc:d:')
     
-    localdisk = Path('F:\\imaging_data\\' + subject + '\\' + date)
+    localdisk = args[0]
+    print(localdisk)
+    subject = localdisk.split('\\')[-3]
+    date = localdisk.split('\\')[-1]
+    print(subject,date)
     eid = one.search(subject=subject, date=date)
     dtypes = ['_spikeglx_sync.channels', '_spikeglx_sync.polarities',
             '_spikeglx_sync.times']
@@ -39,3 +46,5 @@ def fetchONE(subject,date):
             'trials.stimOff_times',
             'trials.stimOn_times']
     _ = one.load(eid, dataset_types=d_sets, download_only=True)
+if __name__ == "__main__":
+   fetchONE(sys.argv[1:])
