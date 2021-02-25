@@ -14,30 +14,7 @@ import matplotlib.colors as mplc
 from matplotlib.lines import Line2D
 import seaborn as sns
 
-
-def extract_onset_times(localdisk):
-        
-    logdata,led,sync,ncomm = parse_cam_log(glob(pjoin(localdisk,'*.camlog'))[0],readTeensy=True)
-
-    pulsetimes = []
-    counts = np.unique(sync['count'])
-    for c in counts:
-        pulse = sync[np.array(sync['count']) == c].timestamp
-        if len(pulse) == 2:
-            pulsetimes.append(pulse)
-        else:
-            print('There was a pulse with no rise: '.format(pulse))
-    pulsetimes = np.stack(pulsetimes)
-    print('N pulses: {0}'.format(len(pulsetimes)))
-
-    all_onsets = sync.iloc[::2] #take only the upfronts
-    onsets = np.diff(pulsetimes) < 10 #shortest pulses are the trial onset times
-    onsets = [on[0] for on in onsets]
-    onset_times = all_onsets[onsets]
-    onset_times['frame']=(onset_times['frame']/2).astype(int)
-    # onset_times.to_pickle(pjoin(localdisk,'trial_onsets.npy'))
-    np.save(pjoin(localdisk,'trial_onsets.npy'),onset_times[['timestamp','frame']])
-    return onset_times
+####################### Functions for fetching and organizing data ################################
 
 def fetch_task_data(subject,date,exp='001',FlatIron='G:\\FlatIron\\zadorlab\\Subjects\\'):
     """
@@ -90,10 +67,10 @@ def sync_to_task(localdisk):
 
     for i in range(len(bpod_gaps)): 
         # make sure the pulses are the same
-        if math.isclose(bpod_gaps[i],sync_gaps[i],abs_tol = .0015):
+        if math.isclose(bpod_gaps[i],sync_gaps[i],abs_tol = .005):
             sync['task_time'].iloc[i] = bpod_times[i]
         else:
-            print('WARNING: syncs do not line up for index {}!!!'.format[i])
+            print('WARNING: syncs do not line up for index {}!!!'.format(i))
     sync['frame'] = (sync['frame']/2).astype(int)
     return sync.dropna(axis=0)
 
@@ -123,39 +100,100 @@ def time_to_frames(sync,localdisk,event_times, dropna=True):
 
     return (event_frames/2).astype(int)
 
-def make_allen_outline(atlas, allen_transform=None):
-    '''
-       takes in the projection of the dorsal allen atlas (an image with a number for each pixel 
-       coresponding to each brain area), and the transform matrix to apply if you want to map 
-       it onto an image.
-       outputs an image of the outline of the dorsal cortex
-    '''
-    try: 
-        outline = im_apply_transform(np.diff(atlas)!=0,allen_transform)
-    except:
-        outline = np.diff(atlas)!=0
+def time_to_frameDF(behavior,sync_behavior,localdisk):
+    """
+    Makes a dataframe that has all the timing events converted to frames
+    Inputs: 
+        behavior: df with len(num_trials) and different columns witih trial info
+        sync_behavior: the sync dataframe to go between task time and frames
+        localdisk: the directory where the above two are saved for this session
+    outputs:
+        frameDF: a dataframe with all the behavioral events that end with _times, that are instead
+        aligned to the camera and displayed as frames
+    """
+    mask = ['times' in key for key in behavior.keys()]
+    time_df = behavior[behavior.keys()[mask]]
+    frame_df = pd.DataFrame(columns=time_df.keys())
+    for (columnName, columnData) in time_df.iteritems():
+        frame_df[columnName] = time_to_frames(sync_behavior,localdisk,np.array(columnData),dropna=False)
+    frameDF = frame_df.astype(np.int64)
+    frameDF[frameDF==0]=np.nan
 
-    # diff removes the last row, so add back a row of zeros
-    pad = np.zeros([outline.shape[0],1])
-    # pad[:] = np.nan
-    outline = np.concatenate([outline,pad],axis=1)
-    outline[outline < .1] = 0
-    outline[outline > .1] = 1
-    outline_im = outline
-    outline_trace = np.where(outline_im)
-    outline_trace = np.array(outline_trace)
-    # change the image to a L x W x 4 matrix to make all the 0 values clear instead of white
-    trues = outline_im == 1
-    falses = outline_im == 0
-    clear = [0,0.,0.,0]
-    black = [1,1.,1.,255]
-    new_im = np.empty([outline_im.shape[0],outline_im.shape[1],4])
-    new_im[trues] = black
-    new_im[falses] = clear
+    return frameDF
 
-    return new_im, outline_trace
+def get_ses_data(subject,date,baseDir=r'H:\imaging_data'):
+    """
+    Function that retrieves most data for a session that I normally use when looking at a session.
+    Inputs: 
+        subject : (str) the name of the subject
+        date : (str) the date of the session in YYYY-MM-DD format
+        baseDir : (str) the directory where all the subject data lives, default is H:\\imaging_data
+    Returns:
+        pd.DataFrame len(trials) with stnadard task related events like choice, stimulus, etc.
+        pd.DataFrame len(nframes) where bpod events have been aligned to the imaging frame
+            closest. some events include stimulus onset, movement onset, and response. TODO: add 
+            DLC events
+        stack object containing the spatial components warped to the allen atlas, and the 
+            motion and hemodynamicals corrected denoised temporal components of the SVD
+        pd.DataFrame including the allen information of each area including borders, acronym, and 
+            atlas label
+        atlas of allen areas, with a manually selected mask for this current session applied, this
+            means all areas in the regions dataframe above will likely not be present in this atlas
+    """
+    os.chdir(pjoin(baseDir,subject))
+    localdisk = pjoin(os.getcwd(),date)
+    os.chdir(localdisk)
+    ## Check if the session has been preprocessed, and if behavior data has been downloaded
+    if not os.path.isfile('SVTcorr.npy'):
+        print('{} \nThis session has not yet been preprocessed, skipping'.format(localdisk))
+        return None
+    alf_folder = pjoin('G:\\FlatIron\\zadorlab\\Subjects\\',subject,date,'001','alf')
+    if not os.path.isfile(pjoin(alf_folder,'_ibl_trials.stimOn_times.npy')):
+        print('{} \nNo alf data, try running fetchONE to get it, or check extraction'.format(alf_folder))
+        return None
+    
+    behavior = fetch_task_data(subject,date)
+    behavior = behavior[behavior['choice']!=0].reset_index() #drop trials where there was no response
+    U = np.load(pjoin(localdisk,'U.npy'))# load spatial components
+    SVTcorr = np.load(pjoin(localdisk,'SVTcorr.npy'))# load hemodynamic corrected temporal components
 
-def peth_by_allen_area(event_frames, U,SVT, allen_idx, allen_atlas, window=[-10,60], smoothing=1,channel=0):
+    # the allen atlas and brain mask for finding which pixels corresponds to which area
+    atlas, area_names, brain_mask = atlas_from_landmarks_file(pjoin(localdisk,'dorsal_cortex_landmarks.JSON'),do_transform=False)
+    ccf_regions,proj,brain_outline = allen_load_reference('dorsal_cortex')
+
+    #the transform to apply to the images
+    transform = load_allen_landmarks(pjoin(localdisk, 'dorsal_cortex_landmarks.JSON'))['transform']
+    lmarks = load_allen_landmarks(pjoin(localdisk, 'dorsal_cortex_landmarks.JSON'))
+    nref_regions = allen_transform_regions(None,ccf_regions,
+                                    resolution=lmarks['resolution'],
+                                    bregma_offset=lmarks['bregma_offset'])
+            
+    stack = SVDStack(U,SVTcorr,dims = U.shape[:-1])
+    stack.set_warped(True,M = lmarks['transform'])
+    # mask the pixels outside of the brain outline.
+    from wfield.imutils import mask_to_3d
+    # transform the brain outline to image coordinates
+    b_outline = brain_outline/lmarks['resolution'] + np.array(lmarks['bregma_offset'])
+    mask = np.load('brain_mask.npy')
+    atlas[~mask]=0 # drop unrecorded pixels
+    #create a 3d mask of the brain outline
+    mask3d = mask_to_3d(mask,shape = np.roll(stack.U_warped.shape,1))
+    # set pixels outside the brain outline to zero
+    stack.U_warped[~mask3d.transpose([1,2,0])] = 0   
+    
+    #sync up the behavior and grab a few things for analysis
+    sync_behavior = sync_to_task(localdisk)
+    time_mask = ['times' in key for key in behavior.keys()]
+    time_df = behavior[behavior.keys()[time_mask]]
+    frame_df = pd.DataFrame(columns=time_df.keys())
+    for (columnName, columnData) in time_df.iteritems():
+        frame_df[columnName] = time_to_frames(sync_behavior,localdisk,np.array(columnData),dropna=False)
+    frame_df = frame_df.astype(np.int64)
+    return behavior, frame_df, stack, ccf_regions, atlas
+
+###################################################################################################
+
+def peth_by_allen_area(event_frames, U,SVT, allen_idx, allen_atlas, window=[-10,60], smoothing=1):
     """
      This function creates a PETH for a given allen region
      Inputs:
@@ -170,8 +208,7 @@ def peth_by_allen_area(event_frames, U,SVT, allen_idx, allen_atlas, window=[-10,
          window: the window in frames around which to make the peth
          smoothing: the size of the gaussian kernal used for temporal smoothing
     Outputs:
-        channel 0 peth for this region as a 1D numpy array the length of the window size
-        channel 1 peth for this region as a 1D numpy array the length of the window size
+        peth for this region as a 1D numpy array the length of the window size
         allen acronym
     """
     assert atlas.shape == U.shape[:2], 'atlas is not transformed to match the images, use: atlas_from_landmarks_file(<landmarks_file>,do_transform=True)'
@@ -230,7 +267,6 @@ def whole_brain_peth(event_frames, U,SVT, window=[-10,30],smoothing=[1,1,1]):
         cnt+=1
     m=runsum/cnt
     reconstruction = reconstruct(U,m)
-    # reconstruction = reconstruction/cnt
     ste = reconstruct(U,np.sqrt(runsq/cnt - np.square(runsum/cnt))/np.sqrt(len(event_frames)))
     if smoothing:
         reconstruction = gaussian_filter(reconstruction,smoothing)
@@ -275,7 +311,7 @@ def psth_from_df(U,SVT,behavior,sync_behavior,atlas, area_list, ccf_regions,loca
         stes.append(ste)
     #loop to plot each psth
     # fig,ax = plt.subplots(1,1,constrained_layout=True)
-    norm = mplc.Normalize(vmin=-.3,vmax=len(psths)-.3)
+    norm = mplc.Normalize(vmin=-1,vmax=len(psths)-1)
     cmaps = ['Blues','Reds','Greens','Oranges','Purples']
     clist = []
     labels = []
@@ -488,26 +524,6 @@ def make_legend(ax,colors,labels, line_width=4,location='upper left', bbox_to_an
         lines.append(Line2D([0], [0], color=color, lw=line_width))
     ax.legend(lines,labels, bbox_to_anchor=bbox_to_anchor, loc=location)
 
-def time_to_frameDF(behavior,sync_behavior,localdisk):
-    """
-    Makes a dataframe that has all the timing events converted to frames
-    Inputs: 
-        behavior: df with len(num_trials) and different columns witih trial info
-        sync_behavior: the sync dataframe to go between task time and frames
-        localdisk: the directory where the above two are saved for this session
-    outputs:
-        frameDF: a dataframe with all the behavioral events that end with _times, that are instead
-        aligned to the camera and displayed as frames
-    """
-    mask = ['times' in key for key in behavior.keys()]
-    time_df = behavior[behavior.keys()[mask]]
-    frame_df = pd.DataFrame(columns=time_df.keys())
-    for (columnName, columnData) in time_df.iteritems():
-        frame_df[columnName] = time_to_frames(sync_behavior,localdisk,np.array(columnData),dropna=False)
-    frameDF = frame_df.astype(np.int64)
-    frameDF[frameDF==0]=np.nan
-
-    return frameDF
 
 def plot_trace_sample(fig,ax,U, SVT, behavior, sync_behavior, allen_area, atlas,localdisk, plot_sec=15):
     # first get all the frames for all the events and store inf frame_df
