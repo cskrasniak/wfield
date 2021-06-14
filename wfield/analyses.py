@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from  wfield import *
-import imageio
+import pickle
 import math
 from matplotlib import cm
 import matplotlib.colors as mplc
@@ -74,9 +74,9 @@ def sync_to_task(localdisk):
     sync['frame'] = (sync['frame']/2).astype(int)
     return sync.dropna(axis=0)
 
-def time_to_frames(sync,localdisk,event_times, dropna=True):
+def time_to_frames(sync, localdisk, event_times, dropna=True):
     """
-    This function attributes the closest frame of the imaging data to an array of events, such as 
+    Attributes the closest frame of the imaging data to an array of events, such as 
     stimulus onsets.
     sync: the synchronization pandas array including the frame and timestamp from imaging, and the
           timestamp for the bpod events from the fpga
@@ -86,10 +86,11 @@ def time_to_frames(sync,localdisk,event_times, dropna=True):
     """
     if dropna:
         event_times = event_times[~np.isnan(event_times)]
-    logdata,led,_,ncomm = parse_cam_log(glob(pjoin(localdisk,'*.camlog'))[0],readTeensy=True)
-    sync['conversion'] = sync['timestamp']-sync['task_time']
+    logdata, led, _, ncomm = parse_cam_log(glob(pjoin(localdisk, '*.camlog'))[0], readTeensy=True)
+    sync['conversion'] = sync['timestamp'] - sync['task_time']
 
-    led['timestamp'] = led['timestamp']/1000  # this is the time of each frame
+    led['timestamp'] = led['timestamp'] / 1000  # this is the time of each frame
+
     def find_nearest(array, value):
         array = np.asarray(array)
         return (np.abs(array - value)).argmin()
@@ -97,7 +98,8 @@ def time_to_frames(sync,localdisk,event_times, dropna=True):
     for i in range(len(event_times)):
         offset = sync.iloc[find_nearest(sync['task_time'],event_times[i])]['conversion']
         event_frames[i] = led.iloc[find_nearest(led['timestamp'],event_times[i]+offset)]['frame']
-
+    # print(abs(np.nanmax(event_times)-np.nanmax(event_frames)/15),np.nanmax(event_times))
+    # assert abs(np.nanmax(event_times)-np.nanmax(event_frames)/15) < np.nanmax(event_times)/3, 'seems misaligned'
     return (event_frames/2).astype(int)
 
 def time_to_frameDF(behavior,sync_behavior,localdisk):
@@ -153,7 +155,7 @@ def get_ses_data(subject,date,baseDir=r'H:\imaging_data'):
         return None
     
     behavior = fetch_task_data(subject,date)
-    behavior = behavior[behavior['choice']!=0].reset_index() #drop trials where there was no response
+    # behavior = behavior[behavior['choice']!=0].reset_index() #drop trials where there was no response
     U = np.load(pjoin(localdisk,'U.npy'))# load spatial components
     SVTcorr = np.load(pjoin(localdisk,'SVTcorr.npy'))# load hemodynamic corrected temporal components
 
@@ -189,9 +191,136 @@ def get_ses_data(subject,date,baseDir=r'H:\imaging_data'):
     for (columnName, columnData) in time_df.iteritems():
         frame_df[columnName] = time_to_frames(sync_behavior,localdisk,np.array(columnData),dropna=False)
     frame_df = frame_df.astype(np.int64)
-    return behavior, frame_df, stack, ccf_regions, atlas
+    return behavior, frame_df, stack, nref_regions, atlas
+
+def downsample_to_allen(stack,atlas,ccf_regions):
+    """
+    Downsamples the whole df/f video for a session to a manageable size. This pools all activity of
+    an Allen area and takes the mean. It returns a dataframe where the keys are the allen acronym
+    for each area that is within the masked image, this makes many tasks more manageable on a desktop.
+    """
+    activity_df = pd.DataFrame(columns=ccf_regions['acronym'])
+    for area in ccf_regions['label']:
+        acronym = ccf_regions['acronym'][ccf_regions['label']==area].iloc[0]
+        activity_df[acronym] = stack.get_timecourse(np.where(atlas==area)).mean(axis=0)
+    
+    return activity_df.dropna(axis=1)
+
+def downsample_atlas(atlas,pixelSize=20,mask=None):
+    """
+    Downsamples the atlas so that it can be matching to the downsampled images. if mask is not provided
+    then just the atlas is used. pixelSize must be a common divisor of 540 and 640
+    """
+    if not mask:
+        mask = atlas!=0
+    downsampled_atlas = np.zeros((int(atlas.shape[0]/pixelSize),int(atlas.shape[1]/pixelSize)))
+    for top in np.arange(0,540,pixelSize):
+        for left in np.arange(0,640,pixelSize):
+            useArea = (np.array([np.arange(top,top+pixelSize)]*pixelSize).flatten(),
+                    np.array([[x]*pixelSize for x in range(left,left+pixelSize)]).flatten())
+            u_areas,u_counts = np.unique(atlas[useArea],return_counts=True)
+            if np.sum(mask[useArea]!=0) <.5:
+                # if more than half of the pixels are outside of the brain, skip this group of pixels
+                continue
+            else:
+                spot_label = u_areas[np.argmax(u_counts)]
+                downsampled_atlas[int(top/pixelSize),int(left/pixelSize)] = spot_label
+    return downsampled_atlas.astype(int)
+
+def spatial_down_sample(stack,pixelSize=20):
+    """
+    Downsamples the whole df/f video for a session to a manageable size, best are to do a 10x or 
+    20x downsampling, this makes many tasks more manageable on a desktop.
+    """
+    mask = stack.U_warped != 0
+    mask = mask.mean(axis=2)
+    try:
+        downsampled_im = np.zeros((stack.SVT.shape[1],
+                                   int(stack.U_warped.shape[0]/pixelSize),
+                                   int(stack.U_warped.shape[1]/pixelSize)))
+    except:
+        print('Choose a downsampling amount that is a common divisor of 540 and 640')
+    for top in tqdm(np.arange(0,540,pixelSize)):
+        for left in np.arange(0,640,pixelSize):
+            useArea = (np.array([np.arange(top,top+pixelSize)]*pixelSize).flatten(),
+                    np.array([[x]*pixelSize for x in range(left,left+pixelSize)]).flatten())
+            if np.sum(mask[useArea]!=0) <.5:
+                # if more than half of the pixels are outside of the brain, skip this group of pixels
+                continue
+            else:
+                spot_activity = stack.get_timecourse(useArea).mean(axis=0)
+                downsampled_im[:,int(top/pixelSize),int(left/pixelSize)] = spot_activity
+    return downsampled_im
 
 ###################################################################################################
+def rf_map(subject,date):
+    localdisk = pjoin(r'H:\imaging_data',subject,date)
+    os.chdir(localdisk)
+    f = open('rf_stim_frames.pkl','rb')
+    rf_stim_frames = pickle.load(f)
+    rf_stim_pos=np.load('rf_stim_pos.npy')
+    rf_stim_times = np.load('rf_stim_times.npy')
+    behavior, frame_df, stack, nref_regions, atlas = get_ses_data(subject,date)
+    sync = sync_to_task(localdisk)
+    print('synching rf_map stims to imaging...')
+    rf_stim_frame_time = time_to_frames(sync,localdisk,rf_stim_times)
+    screen = np.arange(14*14).reshape(14,14)
+    # create a 2d colormap
+    norm = mplc.Normalize(0,14)
+    # reds = mpl.cm.get_cmap('Reds')
+    reds = mplc.ListedColormap(np.array([np.linspace(0,.75,14),np.ones(14)*.25,np.ones(14)*.25,np.ones(14)]).T)
+    # greens = mpl.cm.get_cmap('Greens_r')
+    greens = mplc.ListedColormap(np.array([np.ones(14)*.25,np.ones(14)*.25,np.linspace(0,.75,14),np.ones(14)]).T)
+    reds = reds(norm(np.arange(14)))
+    greens = greens(norm(np.arange(14)))
+    cmap_2d = np.zeros((14,14,4))
+    for i in range(len(greens)):
+        for j in range(len(reds)):
+            cmap_2d[i,j,:] = np.mean([reds[j],greens[i]],axis=0)
+    new_cmap = mplc.ListedColormap(cmap_2d.reshape((14*14,4)))
+    plt.figure()
+    plt.axis('off')
+    plt.imshow(screen,cmap=new_cmap)
+    result_ims = []
+    plt.figure()
+    im = np.zeros((190,300,4))
+    for i,pos in enumerate(rf_stim_pos):
+        frames = rf_stim_frame_time[rf_stim_frames['on'][i][0]]
+        frames = np.concatenate([frames,rf_stim_frame_time[rf_stim_frames['off'][i][0]]])
+        use_frames = np.array([stack.SVT[:,frame:frame+2] for frame in frames])
+        psth = np.mean(use_frames,axis=0)
+        # response= np.sum(psth,axis=1)
+        # top = new_cmap(norm(i))
+        # bottom = np.array(top)
+        # bottom[-1]=0
+        # newcolors = np.array([np.linspace(low,high,256) for low,high in zip(bottom,top)])
+        # cmap2 =  mplc.ListedColormap(newcolors.T, name='cmap2')
+        # im_norm = mplc.Normalize(np.min(response),np.max(response))
+        # im+=cmap2(im_norm(response))
+        result_ims.append(psth)
+    result_ims = [reconstruct(stack.U_warped,svt) for svt in result_ims]
+    baseline = np.mean(result_ims,axis=(0,1))
+    result_ims=np.array(result_ims)[:,0,:,:]
+    result_ims = result_ims-baseline
+
+    plt.figure()
+    im = np.zeros((190,300))
+    result_grid = result_ims.reshape((15,15,190,300))
+    h_mean = np.mean(result_grid,axis = 0)
+    v_mean = np.mean(result_grid,axis=1)
+    for i in range(h_mean.shape[0]):
+        plt.figure()
+        plt.imshow(h_mean[i],cmap='jet')
+        plt.figure()
+        plt.imshow(v_mean[i],cmap='jet')
+        plt.show()
+    for i,pos in enumerate(rf_stim_pos):
+        if not (pos[1] % 14):
+            plt.figure()
+            plt.text(3,3,pos)
+            plt.imshow(result_ims[i],cmap='jet')
+            plt.show()
+
 
 def peth_by_allen_area(event_frames, U,SVT, allen_idx, allen_atlas, window=[-10,60], smoothing=1):
     """
@@ -273,7 +402,7 @@ def whole_brain_peth(event_frames, U,SVT, window=[-10,30],smoothing=[1,1,1]):
     x = np.arange(window[0],window[1])
     return x, reconstruction, ste
 
-def psth_from_df(U,SVT,behavior,sync_behavior,atlas, area_list, ccf_regions,localdisk,ax=plt.gca(), events='stimOn_times', split_on='contrastRight',window=[-20,60],smoothing=[1,1,1]):
+def psth_from_df(U,SVT,behavior,frameDF,atlas, area_list, ccf_regions,ax=plt.gca(), events='stimOn_times', split_on='contrastRight',window=[-20,30],smoothing=[1,1,1]):
     """
     Make and plot psth by calling a column from behavior to plot different lines for each condition
     in that column. best used with the contrasts, probabilities, and choices, though you can also 
@@ -296,8 +425,8 @@ def psth_from_df(U,SVT,behavior,sync_behavior,atlas, area_list, ccf_regions,loca
     """
 
     uniques = np.unique(behavior[split_on])
-    frameDF = time_to_frameDF(behavior,sync_behavior,localdisk)
-    frameDF[frameDF==0]=np.nan
+    # frameDF = time_to_frameDF(behavior,sync_behavior,localdisk)
+    # frameDF[frameDF==0]=np.nan
     psths=[]
     stes=[]
     if type(area_list) == int:
@@ -334,16 +463,41 @@ def psth_from_df(U,SVT,behavior,sync_behavior,atlas, area_list, ccf_regions,loca
             labels.append(area_name + ', ' + split_on + ' = ' + str(uniques[i]))
             cnt+=1
 
-    make_legend(ax,clist,labels,location='upper right',bbox_to_anchor=(.99,.99))
+    # make_legend(ax,clist,labels,location='upper right',bbox_to_anchor=(.99,.99))
+    plot_x = np.arange(-6,31,6)
+    ax.set_xticks(plot_x)
+    ax.set_xticklabels((plot_x/15))
     ax.set_xlim(np.min(x),np.max(x))
-    ax.set_xticks([0,15,30,45,60])
-    ax.set_xticklabels([0,.5,1,1.5,2])
     ax.axvline(0,0,1,color='k')
     ax.set_xlabel('time (s)')
     ax.set_ylabel('df/f')
     ax.set_ylim(-.01,.03)
 
     return x, psths, stes
+
+def plot_psth(ax,x, psth, ste, atlas, area, ccf_regions,color,format_axis=True):
+    '''
+    Takes the output of whole_brain_peth and plots psth traces for a subset of areas.
+    x,psth,std: the output of whole_brain_peth
+    atlas: (numpy array) the transformed atlas returned by 
+                      atlas_from_landmarks_file(<landmarks_file>,do_transform=True)
+    area_list: the list off integer area codes to index into the atlas
+    '''
+    temp_df = psth[:,atlas==area].mean(axis=1)
+    temp_ste = ste[:,atlas==area].mean(axis=1)
+    ax.plot(x,temp_df,color=color)
+    ax.fill_between(x,temp_df+temp_ste,temp_df-temp_ste,color=color,alpha=.5)
+
+    if format_axis:
+        ax.set_xlim(np.min(x),np.max(x))
+        xticks = np.array([0,5,10,15,20])
+        ax.set_xticks(xticks)
+        ax.set_xticklabels(np.round(xticks/30,2))
+        ax.axvline(0,0,1,color='k')
+        ax.set_xlabel('time (s)')
+        ax.set_ylabel('df/f')
+        # plt.show(block=False)
+
 
 def plot_bi_psth(U,SVT,events,allen_area,allen_atlas,ax=plt.gca()):
     x,peth_l,std_l = peth_by_allen_area(events,U,SVT,allen_area.label, allen_atlas,window=[-10,60])
