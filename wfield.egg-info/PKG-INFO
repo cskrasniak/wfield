@@ -1,0 +1,10 @@
+Metadata-Version: 1.0
+Name: wfield
+Version: 0.1
+Summary: Utilities to look at widefield data and align with the allen reference map.
+Home-page: UNKNOWN
+Author: Joao Couto
+Author-email: jpcouto@gmail.com
+License: GPL
+Description: Utilities to look at widefield data and align with the allen reference map.
+Platform: UNKNOWN
