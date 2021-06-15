@@ -27,8 +27,12 @@ def fetchONE(argv):
     
     localdisk = args[0]
     print(localdisk)
-    subject = localdisk.split('\\')[-2]
-    date = localdisk.split('\\')[-1]
+    if sys.platform=='linux':
+        split_str = '/'
+    elif sys.platform == 'win32':
+        split_str = '\\'
+    subject = localdisk.split(split_str)[-2]
+    date = localdisk.split(split_str)[-1]
     print(subject,date)
     eid = one.search(subject=subject, date=date)
     if type(eid) == list:
