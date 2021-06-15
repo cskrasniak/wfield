@@ -435,10 +435,11 @@ frames = []
 stacks = []
 plot_dates = []
 ds_factor=5
-for date in dates[3:4]:
+for date in dates[2:3]:
     try:
         behavior, frame_df, stack, ccf_regions, atlas = get_ses_data(subject,date)
     except:
+        print('data loading failed, skipping session')
         continue
     plot_dates.append(date)
     downsampled_im = spatial_down_sample(stack,ds_factor)
