@@ -435,7 +435,7 @@ frames = []
 stacks = []
 plot_dates = []
 ds_factor=5
-for date in dates[2:3]:
+for date in dates:
     try:
         behavior, frame_df, stack, ccf_regions, atlas = get_ses_data(subject,date)
     except:
@@ -455,6 +455,10 @@ ds_map = brain_map.applymap(np.array)
 ds_map = ds_map / ds_factor
 ds_atlas = downsample_atlas(atlas,ds_factor)
 
+train_ses = 2
+behavior = trials[train_ses]
+downsampled_im = ims[train_ses]
+frame_df = frames[train_ses]
 brain_mask = downsampled_im[0,:,:] !=0
 flat_mask = brain_mask.flatten()
 [train_X,test_X],[train_Y,test_Y] = format_for_logreg(behavior,downsampled_im,frame_df,use_choice=None, split=True)
