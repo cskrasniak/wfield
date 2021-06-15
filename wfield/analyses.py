@@ -149,7 +149,7 @@ def get_ses_data(subject,date,baseDir=r'H:\imaging_data',FlatIron='G:\\FlatIron\
     if not os.path.isfile('SVTcorr.npy'):
         print('{} \nThis session has not yet been preprocessed, skipping'.format(localdisk))
         return None
-    alf_folder = pjoin('G:\\FlatIron\\zadorlab\\Subjects\\',subject,date,'001','alf')
+    alf_folder = pjoin(FlatIron,subject,date,'001','alf')
     if not os.path.isfile(pjoin(alf_folder,'_ibl_trials.stimOn_times.npy')):
         print('{} \nNo alf data, try running fetchONE to get it, or check extraction'.format(alf_folder))
         return None
