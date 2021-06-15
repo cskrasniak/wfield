@@ -160,12 +160,12 @@ def get_ses_data(subject,date,baseDir=r'H:\imaging_data',FlatIron='G:\\FlatIron\
     SVTcorr = np.load(pjoin(localdisk,'SVTcorr.npy'))# load hemodynamic corrected temporal components
 
     # the allen atlas and brain mask for finding which pixels corresponds to which area
-    atlas, area_names, brain_mask = atlas_from_landmarks_file(pjoin(localdisk,'dorsal_cortex_landmarks.JSON'),do_transform=False)
+    atlas, area_names, brain_mask = atlas_from_landmarks_file(pjoin(localdisk,'dorsal_cortex_landmarks.json'),do_transform=False)
     ccf_regions,proj,brain_outline = allen_load_reference('dorsal_cortex')
 
     #the transform to apply to the images
-    transform = load_allen_landmarks(pjoin(localdisk, 'dorsal_cortex_landmarks.JSON'))['transform']
-    lmarks = load_allen_landmarks(pjoin(localdisk, 'dorsal_cortex_landmarks.JSON'))
+    transform = load_allen_landmarks(pjoin(localdisk, 'dorsal_cortex_landmarks.json'))['transform']
+    lmarks = load_allen_landmarks(pjoin(localdisk, 'dorsal_cortex_landmarks.json'))
     nref_regions = allen_transform_regions(None,ccf_regions,
                                     resolution=lmarks['resolution'],
                                     bregma_offset=lmarks['bregma_offset'])
