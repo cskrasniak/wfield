@@ -123,7 +123,7 @@ def time_to_frameDF(behavior,sync_behavior,localdisk):
 
     return frameDF
 
-def get_ses_data(subject,date,baseDir=r'H:\imaging_data'):
+def get_ses_data(subject,date,baseDir=r'H:\imaging_data',FlatIron='G:\\FlatIron\\zadorlab\\Subjects\\'):
     """
     Function that retrieves most data for a session that I normally use when looking at a session.
     Inputs: 
@@ -154,7 +154,7 @@ def get_ses_data(subject,date,baseDir=r'H:\imaging_data'):
         print('{} \nNo alf data, try running fetchONE to get it, or check extraction'.format(alf_folder))
         return None
     
-    behavior = fetch_task_data(subject,date)
+    behavior = fetch_task_data(subject,date,FlatIron=FlatIron)
     # behavior = behavior[behavior['choice']!=0].reset_index() #drop trials where there was no response
     U = np.load(pjoin(localdisk,'U.npy'))# load spatial components
     SVTcorr = np.load(pjoin(localdisk,'SVTcorr.npy'))# load hemodynamic corrected temporal components
@@ -298,14 +298,22 @@ def rf_map(subject,date):
         # im_norm = mplc.Normalize(np.min(response),np.max(response))
         # im+=cmap2(im_norm(response))
         result_ims.append(psth)
-    result_ims = [reconstruct(stack.U_warped,svt) for svt in result_ims]
-    baseline = np.mean(result_ims,axis=(0,1))
-    result_ims=np.array(result_ims)[:,0,:,:]
-    result_ims = result_ims-baseline
+    result_ims = np.array([reconstruct(stack.U_warped,svt) for svt in result_ims])
+
+    plt.figure()
+    plt.imshow(np.mean(result_ims,axis=(0,1)),cmap='jet')
+    for i,r in nref_regions.iterrows():
+        plt.plot(r['left_x'],r['left_y'],color='k',lw=0.3)
+        plt.plot(r['right_x'],r['right_y'],color='k',lw=0.3)
+    result_ims=result_ims[:,0,:,:]
+    # first_stim = np.min(frames)
+    # baseline = np.mean(reconstruct(stack.U_warped,stack.SVT[:,first_stim-200:first_stim]),axis=0)
+    # result_ims=np.array(result_ims)#[:,0,:,:]
+    # result_ims = result_ims-baseline
 
     plt.figure()
     im = np.zeros((190,300))
-    result_grid = result_ims.reshape((15,15,190,300))
+    result_grid = result_ims.reshape((15,15,result_ims.shape[1],result_ims.shape[2]))
     h_mean = np.mean(result_grid,axis = 0)
     v_mean = np.mean(result_grid,axis=1)
     for i in range(h_mean.shape[0]):
@@ -313,7 +321,7 @@ def rf_map(subject,date):
         plt.imshow(h_mean[i],cmap='jet')
         plt.figure()
         plt.imshow(v_mean[i],cmap='jet')
-        plt.show()
+        show()
     for i,pos in enumerate(rf_stim_pos):
         if not (pos[1] % 14):
             plt.figure()

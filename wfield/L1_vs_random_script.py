@@ -437,7 +437,7 @@ plot_dates = []
 ds_factor=5
 for date in dates:
     try:
-        behavior, frame_df, stack, ccf_regions, atlas = get_ses_data(subject,date,baseDir=baseDir)
+        behavior, frame_df, stack, ccf_regions, atlas = get_ses_data(subject,date,baseDir=baseDir,FlatIron='/grid/zador/home/ckrasnia/FlatIron')
     except:
         print('data loading failed, skipping session')
         continue
