@@ -515,9 +515,9 @@ for i,C in enumerate(c_list):
         empty_brain[mirror_pix] = 2
         mirror_brain = empty_brain.reshape(im_shape)
         mirror_accuracy[i,sample_num] = model.score(test_X2,test_Y)
-np.save('L1_accuracy.npy',L1_accuracy)
-np.save('pix_accuracy.npy',pix_accuracy)
-np.save('mirror_accuracy.npy',mirror_accuracy)
+np.save(pjoin(localdisk,'analysis_output','L1_accuracy.npy'),L1_accuracy)
+np.save(pjoin(localdisk,'analysis_output','pix_accuracy.npy'),pix_accuracy)
+np.save(pjoin(localdisk,'analysis_output','mirror_accuracy.npy'),mirror_accuracy)
 
 L1_mean = L1_accuracy.mean(axis=1)
 L1_std = L1_accuracy.std(axis=1)
